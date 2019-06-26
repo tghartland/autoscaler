@@ -39,6 +39,11 @@ type UpdateResult struct {
 	commonResult
 }
 
+// ResizeResult is the response of a Resize operations.
+type ResizeResult struct {
+	commonResult
+}
+
 func (r CreateResult) Extract() (string, error) {
 	var s struct {
 		UUID string
@@ -53,6 +58,10 @@ func (r UpdateResult) Extract() (string, error) {
 	}
 	err := r.ExtractInto(&s)
 	return s.UUID, err
+}
+
+func (r ResizeResult) Extract() error {
+	return r.Err
 }
 
 type Cluster struct {
