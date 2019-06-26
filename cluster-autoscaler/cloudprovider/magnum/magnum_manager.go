@@ -17,18 +17,11 @@ limitations under the License.
 package magnum
 
 import (
-	"fmt"
 	"io"
-	"os"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
-	"k8s.io/klog"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
-)
-
-const (
-	defaultManager = "resize"
 )
 
 // magnumManager is an interface for the basic interactions with the cluster.
@@ -46,19 +39,5 @@ type magnumManager interface {
 // Currently reads the environment variable MAGNUM_MANAGER to find which to create,
 // and falls back to a default if the variable is not found.
 func createMagnumManager(configReader io.Reader, discoverOpts cloudprovider.NodeGroupDiscoveryOptions, opts config.AutoscalingOptions) (magnumManager, error) {
-	// For now get manager from env var, can consider adding flag later
-	manager, ok := os.LookupEnv("MAGNUM_MANAGER")
-	if !ok {
-		manager = defaultManager
-	}
-
-	klog.V(0).Infof("Using manager %s", manager)
-	switch manager {
-	case "heat":
-		return createMagnumManagerHeat(configReader, discoverOpts, opts)
-	case "resize":
-		return createMagnumManagerResize(configReader, discoverOpts, opts)
-	}
-
-	return nil, fmt.Errorf("magnum manager does not exist: %s", manager)
+	return createMagnumManagerResize(configReader, discoverOpts, opts)
 }

@@ -213,11 +213,7 @@ func (mgr *magnumManagerResize) getClusterStatus() (string, error) {
 // prevent the cluster from being updated.
 // Returns if updating is possible and the status for convenience.
 func (mgr *magnumManagerResize) canUpdate() (bool, string, error) {
-	clusterStatus, err := mgr.getClusterStatus()
-	if err != nil {
-		return false, "", fmt.Errorf("could not get cluster status: %v", err)
-	}
-	return !statusesPreventingUpdate.Has(clusterStatus), clusterStatus, nil
+	return true, "", nil
 }
 
 // templateNodeInfo returns a NodeInfo with a node template based on the VM flavor
