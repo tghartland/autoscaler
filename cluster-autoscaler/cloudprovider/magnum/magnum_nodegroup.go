@@ -83,10 +83,7 @@ func (ng *magnumNodeGroup) IncreaseSize(delta int) error {
 		return fmt.Errorf("size increase must be positive")
 	}
 
-	size, err := ng.magnumManager.nodeGroupSize(ng.id)
-	if err != nil {
-		return fmt.Errorf("could not check current nodegroup size: %v", err)
-	}
+	size := *ng.targetSize
 	if size+delta > ng.MaxSize() {
 		return fmt.Errorf("size increase too large, desired:%d max:%d", size+delta, ng.MaxSize())
 	}
@@ -106,15 +103,7 @@ func (ng *magnumNodeGroup) IncreaseSize(delta int) error {
 		return fmt.Errorf("could not increase cluster size: %v", err)
 	}
 
-	// Block until cluster has gone into update status and then completed
-	err = ng.waitForClusterStatus(clusterStatusUpdateInProgress, waitForUpdateStatusTimeout)
-	if err != nil {
-		return fmt.Errorf("wait for cluster status failed: %v", err)
-	}
-	err = ng.waitForClusterStatus(clusterStatusUpdateComplete, waitForCompleteStatusTimout)
-	if err != nil {
-		return fmt.Errorf("wait for cluster status failed: %v", err)
-	}
+	klog.V(0).Info("Returning from IncreaseSize")
 	return nil
 }
 
@@ -126,62 +115,9 @@ func (ng *magnumNodeGroup) IncreaseSize(delta int) error {
 //   - does not allow scaling while the cluster is already in an UPDATE_IN_PROGRESS state
 //   - after scaling down, blocks until the cluster has reached UPDATE_COMPLETE
 func (ng *magnumNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
-
-	// Batch simultaneous deletes on individual nodes
-	ng.nodesToDeleteMutex.Lock()
-
-	// First get the node group size and store the value, so that any other parallel delete calls can use it
-	// without having to make the get request for the cluster themselves.
-	// cachedSize keeps a local copy for this goroutine, so that ng.deleteNodesCachedSize is used
-	// only within the ng.nodesToDeleteMutex.
-	var cachedSize int
-	var err error
-	if time.Since(ng.deleteNodesCachedSizeAt) > time.Second*10 {
-		cachedSize, err = ng.magnumManager.nodeGroupSize(ng.id)
-		if err != nil {
-			ng.nodesToDeleteMutex.Unlock()
-			return fmt.Errorf("could not get current node count: %v", err)
-		}
-		ng.deleteNodesCachedSize = cachedSize
-		ng.deleteNodesCachedSizeAt = time.Now()
-	} else {
-		cachedSize = ng.deleteNodesCachedSize
-	}
-
-	// Check that these nodes would not make the batch delete more nodes than the minimum would allow
-	if cachedSize-len(ng.nodesToDelete)-len(nodes) < ng.MinSize() {
-		ng.nodesToDeleteMutex.Unlock()
-		return fmt.Errorf("deleting nodes would take nodegroup below minimum size")
-	}
-	// otherwise, add the nodes to the batch and release the lock
-	ng.nodesToDelete = append(ng.nodesToDelete, nodes...)
-	ng.nodesToDeleteMutex.Unlock()
-
-	// The first of the parallel delete calls to obtain this lock will be the one to actually perform the deletion
 	ng.clusterUpdateMutex.Lock()
 	defer ng.clusterUpdateMutex.Unlock()
-
-	ng.nodesToDeleteMutex.Lock()
-	if len(ng.nodesToDelete) == 0 {
-		// Deletion was handled by another goroutine
-		ng.nodesToDeleteMutex.Unlock()
-		return nil
-	}
-	ng.nodesToDeleteMutex.Unlock()
-
-	// This goroutine has the clusterUpdateMutex, so will be the one
-	// to actually delete the nodes. While this goroutine waits, others
-	// will add their nodes to nodesToDelete and block at acquiring
-	// the clusterUpdateMutex lock. One they get it, the deletion will
-	// already be done and they will return above at the check
-	// for len(ng.nodesToDelete) == 0.
-	time.Sleep(ng.deleteBatchingDelay)
-
-	ng.nodesToDeleteMutex.Lock()
-	nodes = make([]*apiv1.Node, len(ng.nodesToDelete))
-	copy(nodes, ng.nodesToDelete)
-	ng.nodesToDelete = nil
-	ng.nodesToDeleteMutex.Unlock()
+	cachedSize := *ng.targetSize
 
 	var nodeNames []string
 	for _, node := range nodes {
@@ -225,25 +161,9 @@ func (ng *magnumNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 		return fmt.Errorf("manager error deleting nodes: %v", err)
 	}
 
-	// Block until cluster has gone into update status and then completed
-	err = ng.waitForClusterStatus(clusterStatusUpdateInProgress, waitForUpdateStatusTimeout)
-	if err != nil {
-		return fmt.Errorf("wait for cluster status failed: %v", err)
-	}
-	err = ng.waitForClusterStatus(clusterStatusUpdateComplete, waitForCompleteStatusTimout)
-	if err != nil {
-		return fmt.Errorf("wait for cluster status failed: %v", err)
-	}
+	*ng.targetSize = cachedSize - len(nodes)
 
-	// Check the new node group size and store that as the new target
-	newSize, err := ng.magnumManager.nodeGroupSize(ng.id)
-	if err != nil {
-		// Set to the expected size as a fallback
-		*ng.targetSize = cachedSize - len(nodes)
-		return fmt.Errorf("could not check new cluster size after scale down: %v", err)
-	}
-	*ng.targetSize = newSize
-
+	klog.V(0).Info("Returning from DeleteNodes")
 	return nil
 }
 

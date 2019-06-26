@@ -23,11 +23,12 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
+	"k8s.io/klog"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
 const (
-	defaultManager = "heat"
+	defaultManager = "resize"
 )
 
 // magnumManager is an interface for the basic interactions with the cluster.
@@ -51,9 +52,12 @@ func createMagnumManager(configReader io.Reader, discoverOpts cloudprovider.Node
 		manager = defaultManager
 	}
 
+	klog.V(0).Infof("Using manager %s", manager)
 	switch manager {
 	case "heat":
 		return createMagnumManagerHeat(configReader, discoverOpts, opts)
+	case "resize":
+		return createMagnumManagerResize(configReader, discoverOpts, opts)
 	}
 
 	return nil, fmt.Errorf("magnum manager does not exist: %s", manager)

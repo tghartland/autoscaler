@@ -52,7 +52,7 @@ const (
 // TODO: If it becomes possible to update even in UPDATE_FAILED state then it can be removed here
 // https://storyboard.openstack.org/#!/story/2005056
 var statusesPreventingUpdate = sets.NewString(
-	clusterStatusUpdateInProgress,
+	//clusterStatusUpdateInProgress,
 	clusterStatusUpdateFailed,
 )
 

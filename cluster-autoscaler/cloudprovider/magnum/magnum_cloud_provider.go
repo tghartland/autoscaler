@@ -130,7 +130,7 @@ func (mcp *magnumCloudProvider) GetInstanceID(node *apiv1.Node) string {
 // Currently only prints debug information.
 func (mcp *magnumCloudProvider) Refresh() error {
 	for _, nodegroup := range mcp.nodeGroups {
-		klog.V(3).Info(nodegroup.Debug())
+		klog.V(0).Info(nodegroup.Debug())
 	}
 	return nil
 }
