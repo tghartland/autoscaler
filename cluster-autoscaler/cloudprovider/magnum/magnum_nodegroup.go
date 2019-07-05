@@ -19,7 +19,6 @@ package magnum
 import (
 	"fmt"
 	"sync"
-	"time"
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
@@ -42,33 +41,6 @@ type magnumNodeGroup struct {
 	maxSize int
 	// Stored as a pointer so that when autoscaler copies the nodegroup it can still update the target size
 	targetSize *int
-
-	nodesToDelete      []*apiv1.Node
-	nodesToDeleteMutex sync.Mutex
-
-	waitTimeStep        time.Duration
-	deleteBatchingDelay time.Duration
-
-	// Used so that only one DeleteNodes goroutine has to get the node group size at the start of the deletion
-	deleteNodesCachedSize   int
-	deleteNodesCachedSizeAt time.Time
-}
-
-// waitForClusterStatus checks periodically to see if the cluster has entered a given status.
-// Returns when the status is observed or the timeout is reached.
-func (ng *magnumNodeGroup) waitForClusterStatus(status string, timeout time.Duration) error {
-	klog.V(2).Infof("Waiting for cluster %s status", status)
-	for start := time.Now(); time.Since(start) < timeout; time.Sleep(ng.waitTimeStep) {
-		clusterStatus, err := ng.magnumManager.getClusterStatus()
-		if err != nil {
-			return fmt.Errorf("error waiting for %s status: %v", status, err)
-		}
-		if clusterStatus == status {
-			klog.V(0).Infof("Waited for cluster %s status", status)
-			return nil
-		}
-	}
-	return fmt.Errorf("timeout (%v) waiting for %s status", timeout, status)
 }
 
 // IncreaseSize increases the number of nodes by replacing the cluster's node_count.
@@ -88,22 +60,13 @@ func (ng *magnumNodeGroup) IncreaseSize(delta int) error {
 		return fmt.Errorf("size increase too large, desired:%d max:%d", size+delta, ng.MaxSize())
 	}
 
-	updatePossible, currentStatus, err := ng.magnumManager.canUpdate()
-	if err != nil {
-		return fmt.Errorf("can not increase node count: %v", err)
-	}
-	if !updatePossible {
-		return fmt.Errorf("can not add nodes, cluster is in %s status", currentStatus)
-	}
-	klog.V(0).Infof("Increasing size by %d, %d->%d", delta, *ng.targetSize, *ng.targetSize+delta)
-	*ng.targetSize += delta
-
-	err = ng.magnumManager.updateNodeCount(ng.id, *ng.targetSize)
+	klog.V(0).Infof("Increasing size by %d, %d->%d", delta, size, size+delta)
+	err := ng.magnumManager.updateNodeCount(ng.id, size+delta)
 	if err != nil {
 		return fmt.Errorf("could not increase cluster size: %v", err)
 	}
 
-	klog.V(0).Info("Returning from IncreaseSize")
+	*ng.targetSize += delta
 	return nil
 }
 
@@ -117,7 +80,8 @@ func (ng *magnumNodeGroup) IncreaseSize(delta int) error {
 func (ng *magnumNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 	ng.clusterUpdateMutex.Lock()
 	defer ng.clusterUpdateMutex.Unlock()
-	cachedSize := *ng.targetSize
+
+	size := *ng.targetSize
 
 	var nodeNames []string
 	for _, node := range nodes {
@@ -125,17 +89,9 @@ func (ng *magnumNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 	}
 	klog.V(1).Infof("Deleting nodes: %v", nodeNames)
 
-	updatePossible, currentStatus, err := ng.magnumManager.canUpdate()
-	if err != nil {
-		return fmt.Errorf("could not check if cluster is ready to delete nodes: %v", err)
-	}
-	if !updatePossible {
-		return fmt.Errorf("can not delete nodes, cluster is in %s status", currentStatus)
-	}
-
-	// Double check that the total number of batched nodes for deletion will not take the node group below its minimum size
-	if cachedSize-len(nodes) < ng.MinSize() {
-		return fmt.Errorf("size decrease too large, desired:%d min:%d", cachedSize-len(nodes), ng.MinSize())
+	// Check that the total number of nodes to be deleted will not take the node group below its minimum size
+	if size-len(nodes) < ng.MinSize() {
+		return fmt.Errorf("size decrease too large, desired:%d min:%d", size-len(nodes), ng.MinSize())
 	}
 
 	var nodeRefs []NodeRef
@@ -156,14 +112,12 @@ func (ng *magnumNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 		})
 	}
 
-	err = ng.magnumManager.deleteNodes(ng.id, nodeRefs, cachedSize-len(nodes))
+	err := ng.magnumManager.deleteNodes(ng.id, nodeRefs, size-len(nodes))
 	if err != nil {
 		return fmt.Errorf("manager error deleting nodes: %v", err)
 	}
 
-	*ng.targetSize = cachedSize - len(nodes)
-
-	klog.V(0).Info("Returning from DeleteNodes")
+	*ng.targetSize = size - len(nodes)
 	return nil
 }
 
@@ -173,8 +127,12 @@ func (ng *magnumNodeGroup) DecreaseTargetSize(delta int) error {
 		return fmt.Errorf("size decrease must be negative")
 	}
 	klog.V(0).Infof("Decreasing target size by %d, %d->%d", delta, *ng.targetSize, *ng.targetSize+delta)
+	err := ng.magnumManager.updateNodeCount(ng.id, *ng.targetSize+delta)
+	if err != nil {
+		return err
+	}
 	*ng.targetSize += delta
-	return ng.magnumManager.updateNodeCount(ng.id, *ng.targetSize)
+	return nil
 }
 
 // Id returns the node group ID

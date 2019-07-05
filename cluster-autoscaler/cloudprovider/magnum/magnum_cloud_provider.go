@@ -187,14 +187,12 @@ func BuildMagnum(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 		}
 
 		ng := magnumNodeGroup{
-			magnumManager:       manager,
-			id:                  spec.Name,
-			clusterUpdateMutex:  &clusterUpdateLock,
-			minSize:             spec.MinSize,
-			maxSize:             spec.MaxSize,
-			targetSize:          new(int),
-			waitTimeStep:        waitForStatusTimeStep,
-			deleteBatchingDelay: deleteNodesBatchingDelay,
+			magnumManager:      manager,
+			id:                 spec.Name,
+			clusterUpdateMutex: &clusterUpdateLock,
+			minSize:            spec.MinSize,
+			maxSize:            spec.MaxSize,
+			targetSize:         new(int),
 		}
 		*ng.targetSize, err = ng.magnumManager.nodeGroupSize(ng.id)
 		if err != nil {
