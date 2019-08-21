@@ -17,111 +17,28 @@ limitations under the License.
 package magnum
 
 import (
-	"crypto/tls"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
 
 	"github.com/satori/go.uuid"
-	"gopkg.in/gcfg.v1"
-	netutil "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud"
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack/containerinfra/v1/clusters"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
-	"k8s.io/autoscaler/cluster-autoscaler/version"
-	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/klog"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
 // magnumManagerResize implements the magnumManager interface.
-//
-// Most interactions with the cluster are done directly with magnum,
-// but scaling down requires an intermediate step using heat to
-// delete the specific nodes that the autoscaler has picked for removal.
 type magnumManagerResize struct {
 	clusterClient *gophercloud.ServiceClient
 	clusterName   string
-
-	waitTimeStep time.Duration
 }
 
-// createMagnumManagerHeat sets up cluster and stack clients and returns
-// an magnumManagerResize.
-func createMagnumManagerResize(configReader io.Reader, discoverOpts cloudprovider.NodeGroupDiscoveryOptions, opts config.AutoscalingOptions) (*magnumManagerResize, error) {
-	var cfg Config
-	if configReader != nil {
-		if err := gcfg.ReadInto(&cfg, configReader); err != nil {
-			klog.Errorf("Couldn't read config: %v", err)
-			return nil, err
-		}
-	}
-
-	if opts.ClusterName == "" {
-		klog.Fatalf("The cluster-name parameter must be set")
-	}
-
-	authOpts := toAuthOptsExt(cfg)
-
-	provider, err := openstack.NewClient(cfg.Global.AuthURL)
-	if err != nil {
-		return nil, fmt.Errorf("could not authenticate client: %v", err)
-	}
-
-	if cfg.Global.CAFile != "" {
-		roots, err := certutil.NewPool(cfg.Global.CAFile)
-		if err != nil {
-			return nil, err
-		}
-		config := &tls.Config{}
-		config.RootCAs = roots
-		provider.HTTPClient.Transport = netutil.SetOldTransportDefaults(&http.Transport{TLSClientConfig: config})
-
-	}
-
-	userAgent := gophercloud.UserAgent{}
-	userAgent.Prepend(fmt.Sprintf("cluster-autoscaler/%s", version.ClusterAutoscalerVersion))
-	userAgent.Prepend(fmt.Sprintf("cluster/%s", opts.ClusterName))
-	provider.UserAgent = userAgent
-
-	klog.V(5).Infof("Using user-agent %s", userAgent.Join())
-
-	err = openstack.AuthenticateV3(provider, authOpts, gophercloud.EndpointOpts{})
-	if err != nil {
-		return nil, fmt.Errorf("could not authenticate: %v", err)
-	}
-
-	clusterClient, err := openstack.NewContainerInfraV1(provider, gophercloud.EndpointOpts{Type: "container-infra", Name: "magnum", Region: cfg.Global.Region})
-	if err != nil {
-		return nil, fmt.Errorf("could not create container-infra client: %v", err)
-	}
-	clusterClient.Microversion = "1.7"
-
+// createMagnumManagerResize creates an instance of magnumManagerResize.
+func createMagnumManagerResize(clusterClient *gophercloud.ServiceClient, opts config.AutoscalingOptions) (*magnumManagerResize, error) {
 	manager := magnumManagerResize{
 		clusterClient: clusterClient,
 		clusterName:   opts.ClusterName,
-		waitTimeStep:  waitForStatusTimeStep,
-	}
-
-	cluster, err := clusters.Get(manager.clusterClient, manager.clusterName).Extract()
-	if err != nil {
-		return nil, fmt.Errorf("unable to access cluster (%s): %v", manager.clusterName, err)
-	}
-
-	// Prefer to use the cluster UUID if the cluster name was given in the parameters
-	if cluster.UUID != opts.ClusterName {
-		klog.V(0).Infof("Using cluster UUID %s instead of name %s", cluster.UUID, opts.ClusterName)
-		manager.clusterName = cluster.UUID
-
-		userAgent := gophercloud.UserAgent{}
-		userAgent.Prepend(fmt.Sprintf("cluster-autoscaler/%s", version.ClusterAutoscalerVersion))
-		userAgent.Prepend(fmt.Sprintf("cluster/%s", cluster.UUID))
-		provider.UserAgent = userAgent
-
-		klog.V(5).Infof("Using updated user-agent %s", userAgent.Join())
 	}
 
 	return &manager, nil
