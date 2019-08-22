@@ -4,6 +4,13 @@ specified nodegroup. It will run as a `Deployment` in your cluster.
 This README will go over some of the necessary steps required to get
 the cluster autoscaler up and running.
 
+## Compatibility
+
+(TODO)
+* magnum rocky or earlier: cluster autoscaler v1.15
+* magnum stein: cluster autoscaler v1.xx or higher
+* magnum train or later: cluster autoscaler v1.xy or higher
+
 ## Permissions and credentials
 
 The autoscaler needs a `ServiceAccount` with permissions for Kubernetes and
