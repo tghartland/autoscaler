@@ -74,12 +74,14 @@ func (mgr *magnumManagerResize) updateNodeCount(nodegroup string, nodes int) err
 // used to find any nodes which are unregistered in kubernetes.
 // This can not be done with heat currently but a change has been merged upstream
 // that will allow this.
-func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]string, error) {
+func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Instance, error) {
 	// TODO: get node ProviderIDs by getting nova instance IDs from heat
 	// Waiting for https://review.openstack.org/#/c/639053/ to be able to get
 	// nova instance IDs from the kube_minions stack resource.
 	// This works fine being empty for now anyway.
-	return []string{}, nil
+	var nodes []cloudprovider.Instance
+	klog.Infof("getNodes %v", nodes)
+	return nodes, nil
 }
 
 // deleteNodes deletes nodes by passing a comma separated list of names or IPs
@@ -141,6 +143,6 @@ func (mgr *magnumManagerResize) templateNodeInfo(nodegroup string) (*schedulerno
 }
 
 // refresh not implemented
-func (mgr *magnumManagerResize) resfresh() error {
+func (mgr *magnumManagerResize) refresh() error {
 	return nil
 }

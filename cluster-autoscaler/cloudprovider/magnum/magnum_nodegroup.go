@@ -151,11 +151,11 @@ func (ng *magnumNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not get nodes: %v", err)
 	}
-	var instances []cloudprovider.Instance
+	/*var instances []cloudprovider.Instance
 	for _, node := range nodes {
 		instances = append(instances, cloudprovider.Instance{Id: node})
-	}
-	return instances, nil
+	}*/
+	return nodes, nil
 }
 
 // TemplateNodeInfo returns a node template for this node group.

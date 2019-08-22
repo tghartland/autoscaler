@@ -40,7 +40,7 @@ import (
 type magnumManager interface {
 	nodeGroupSize(nodegroup string) (int, error)
 	updateNodeCount(nodegroup string, nodes int) error
-	getNodes(nodegroup string) ([]string, error)
+	getNodes(nodegroup string) ([]cloudprovider.Instance, error)
 	deleteNodes(nodegroup string, nodes []NodeRef, updatedNodeCount int) error
 	getClusterStatus() (string, error)
 	canUpdate() (bool, string, error)

@@ -17,6 +17,7 @@ limitations under the License.
 package magnum
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -45,14 +46,14 @@ var (
 
 // magnumCloudProvider implements CloudProvider interface from cluster-autoscaler/cloudprovider module.
 type magnumCloudProvider struct {
-	magnumManager   *magnumManager
+	magnumManager   magnumManager
 	resourceLimiter *cloudprovider.ResourceLimiter
 	nodeGroups      []magnumNodeGroup
 }
 
 func buildMagnumCloudProvider(magnumManager magnumManager, resourceLimiter *cloudprovider.ResourceLimiter) (cloudprovider.CloudProvider, error) {
 	mcp := &magnumCloudProvider{
-		magnumManager:   &magnumManager,
+		magnumManager:   magnumManager,
 		resourceLimiter: resourceLimiter,
 		nodeGroups:      []magnumNodeGroup{},
 	}
@@ -96,6 +97,7 @@ func (mcp *magnumCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovide
 	if _, found := node.ObjectMeta.Labels["node-role.kubernetes.io/master"]; found {
 		return nil, nil
 	}
+	klog.Infof("Getting node group for node %s", node.Name)
 	return &(mcp.nodeGroups[0]), nil
 }
 
