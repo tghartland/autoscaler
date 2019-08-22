@@ -139,3 +139,8 @@ func (mgr *magnumManagerResize) templateNodeInfo(nodegroup string) (*schedulerno
 	// TODO: create a node template by getting the minion flavor from the heat stack.
 	return nil, cloudprovider.ErrNotImplemented
 }
+
+// refresh not implemented
+func (mgr *magnumManagerResize) resfresh() error {
+	return nil
+}

@@ -67,6 +67,10 @@ func (m *magnumManagerMock) templateNodeInfo(nodegroup string) (*schedulernodein
 	return &schedulernodeinfo.NodeInfo{}, nil
 }
 
+func (m *magnumManagerMock) refresh() error {
+	return nil
+}
+
 func createTestNodeGroup(manager magnumManager) *magnumNodeGroup {
 	current := 1
 	ng := magnumNodeGroup{

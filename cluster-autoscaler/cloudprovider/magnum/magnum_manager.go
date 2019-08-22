@@ -45,6 +45,7 @@ type magnumManager interface {
 	getClusterStatus() (string, error)
 	canUpdate() (bool, string, error)
 	templateNodeInfo(nodegroup string) (*schedulernodeinfo.NodeInfo, error)
+	refresh() error
 }
 
 // createClusterClient creates the gophercloud service client for communicating with magnum.

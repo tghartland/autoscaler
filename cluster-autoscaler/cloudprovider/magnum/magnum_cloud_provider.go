@@ -132,6 +132,12 @@ func (mcp *magnumCloudProvider) Refresh() error {
 	for _, nodegroup := range mcp.nodeGroups {
 		klog.V(0).Info(nodegroup.Debug())
 	}
+
+	err := mcp.magnumManager.refresh()
+	if err != nil {
+		return fmt.Errorf("error in manager refresh: %v", err)
+	}
+
 	return nil
 }
 
