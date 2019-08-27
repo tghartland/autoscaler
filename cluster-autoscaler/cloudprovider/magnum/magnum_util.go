@@ -19,6 +19,7 @@ package magnum
 import (
 	"time"
 
+	"k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack/identity/v3/extensions/trusts"
 )
@@ -144,5 +145,11 @@ type NodeRef struct {
 	Name       string
 	MachineID  string
 	ProviderID string
+	SystemUUID string
 	IPs        []string
+	IsFake     bool
+}
+
+func isFakeNode(node *v1.Node) bool {
+	return len(node.ObjectMeta.UID) == 0
 }

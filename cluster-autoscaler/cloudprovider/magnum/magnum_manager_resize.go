@@ -17,12 +17,16 @@ limitations under the License.
 package magnum
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
-	"github.com/satori/go.uuid"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack/containerinfra/v1/clusters"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack/orchestration/v1/stackresources"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack/orchestration/v1/stacks"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/klog"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
@@ -31,14 +35,42 @@ import (
 // magnumManagerResize implements the magnumManager interface.
 type magnumManagerResize struct {
 	clusterClient *gophercloud.ServiceClient
-	clusterName   string
+	heatClient    *gophercloud.ServiceClient
+
+	clusterName string
+	stackID     string
+	stackName   string
+
+	kubeMinionsStackName string
+	kubeMinionsStackID   string
+
+	failedNodesDeleted map[string]time.Time
 }
 
 // createMagnumManagerResize creates an instance of magnumManagerResize.
-func createMagnumManagerResize(clusterClient *gophercloud.ServiceClient, opts config.AutoscalingOptions) (*magnumManagerResize, error) {
+func createMagnumManagerResize(clusterClient, heatClient *gophercloud.ServiceClient, opts config.AutoscalingOptions) (*magnumManagerResize, error) {
 	manager := magnumManagerResize{
 		clusterClient: clusterClient,
+		heatClient:    heatClient,
 		clusterName:   opts.ClusterName,
+	}
+
+	manager.failedNodesDeleted = make(map[string]time.Time)
+
+	cluster, err := clusters.Get(manager.clusterClient, manager.clusterName).Extract()
+	if err != nil {
+		return nil, fmt.Errorf("unable to access cluster %q: %v", manager.clusterName, err)
+	}
+
+	manager.stackID = cluster.StackID
+	manager.stackName, err = manager.getStackName()
+	if err != nil {
+		return nil, fmt.Errorf("could not store stack name on manager: %v", err)
+	}
+
+	manager.kubeMinionsStackName, manager.kubeMinionsStackID, err = manager.getKubeMinionsStack()
+	if err != nil {
+		return nil, fmt.Errorf("could not store kube minions stack name/ID on manager: %v", err)
 	}
 
 	return &manager, nil
@@ -80,7 +112,89 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 	// nova instance IDs from the kube_minions stack resource.
 	// This works fine being empty for now anyway.
 	var nodes []cloudprovider.Instance
-	klog.Infof("getNodes %v", nodes)
+
+	minionResourcesPages, err := stackresources.List(mgr.heatClient, mgr.kubeMinionsStackName, mgr.kubeMinionsStackID, nil).AllPages()
+	if err != nil {
+		return nil, fmt.Errorf("could not list minion resources: %v", err)
+	}
+
+	minionResources, err := stackresources.ExtractResources(minionResourcesPages)
+	if err != nil {
+		return nil, fmt.Errorf("could not extract minion resources: %v", err)
+	}
+
+	stack, err := stacks.Get(mgr.heatClient, mgr.kubeMinionsStackName, mgr.kubeMinionsStackID).Extract()
+	if err != nil {
+		return nil, fmt.Errorf("could not get kube_minions stack from heat: %v", err)
+	}
+
+	// mapping from index to server ID e.g
+	// "0": "4c30961a-6e2f-42be-be01-5270e1546a89"
+	refsMap := make(map[string]string)
+	for _, output := range stack.Outputs {
+		if output["output_key"] == "refs_map" {
+			refsMapOutput := output["output_value"].(map[string]interface{})
+			for index, ID := range refsMapOutput {
+				refsMap[index] = ID.(string)
+			}
+		}
+	}
+
+	klog.Infof("refsMap: %#v", refsMap)
+	klog.Infof("failedDeleted: %#v", mgr.failedNodesDeleted)
+
+	for _, minion := range minionResources {
+		minion.Links = nil
+		klog.Infof("Minion resource: %#v", minion)
+		instance := cloudprovider.Instance{Id: minion.Name, Status: &cloudprovider.InstanceStatus{}}
+
+		switch minion.Status {
+		case "DELETE_COMPLETE":
+			// Don't return this instance
+			continue
+		case "DELETE_IN_PROGRESS":
+			instance.Status.State = cloudprovider.InstanceDeleting
+		case "INIT_COMPLETE", "CREATE_IN_PROGRESS", "UPDATE_IN_PROGRESS":
+			instance.Status.State = cloudprovider.InstanceCreating
+		case "CREATE_FAILED", "UPDATE_FAILED":
+			instance.Status.State = cloudprovider.InstanceCreating
+			/*if seenAt, found := mgr.failedNodesDeleted[minion.Name]; found {
+				if time.Since(seenAt) < time.Minute {
+					klog.Infof("Skipping previously deleted node %s, %s", minion.Name, minion.PhysicalID)
+					instance.Status.State = cloudprovider.InstanceDeleting
+					break
+				}
+			}*/
+			detail, err := stackresources.Get(mgr.heatClient, mgr.kubeMinionsStackName, mgr.kubeMinionsStackID, minion.Name).Extract()
+			if err != nil {
+				klog.Warningf("Failed to get detail for minion %s in CREATE_FAILED: %v", minion.Name, err)
+				continue
+			}
+			detail.Links = nil
+			klog.Infof("Detail for minion %s in CREATE_FAILED: %#v", minion.Name, detail)
+			errorClass := cloudprovider.OtherErrorClass
+			if strings.Contains(strings.ToLower(detail.StatusReason), "quota") {
+				errorClass = cloudprovider.OutOfResourcesErrorClass
+			}
+			instance.Status.ErrorInfo = &cloudprovider.InstanceErrorInfo{
+				ErrorMessage: detail.StatusReason,
+				ErrorClass:   errorClass,
+			}
+		case "CREATE_COMPLETE", "UPDATE_COMPLETE":
+			if serverID, found := refsMap[minion.Name]; found && serverID != "kube-minion" {
+				instance.Id = fmt.Sprintf("openstack:///%s", serverID)
+			}
+			instance.Status.State = cloudprovider.InstanceRunning
+		default:
+			klog.Infof("Ignoring minion %s in state %s", minion.Name, minion.Status)
+			continue
+		}
+
+		nodes = append(nodes, instance)
+	}
+
+	m, _ := json.MarshalIndent(nodes, "", "\t")
+	klog.Infof("Returning node instances:\n%s", string(m))
 	return nodes, nil
 }
 
@@ -91,15 +205,18 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 // TODO: The two step process is required until https://storyboard.openstack.org/#!/story/2005052
 // is complete, which will allow resizing with specific nodes to be deleted as a single Magnum operation.
 func (mgr *magnumManagerResize) deleteNodes(nodegroup string, nodes []NodeRef, updatedNodeCount int) error {
+	anyFake := false
 	var nodesToRemove []string
 	for _, nodeRef := range nodes {
-		klog.V(0).Infof("manager deleting node: %s", nodeRef.Name)
-		id, err := uuid.FromString(nodeRef.MachineID)
-		if err != nil {
-			return fmt.Errorf("could not convert node machine ID to openstack format: %v", err)
+		if nodeRef.IsFake {
+			anyFake = true
+			klog.Infof("Deleting fake node %s", nodeRef.Name)
+			nodesToRemove = append(nodesToRemove, nodeRef.Name)
+			mgr.failedNodesDeleted[nodeRef.Name] = time.Now()
+			continue
 		}
-		openstackFormatID := id.String()
-		nodesToRemove = append(nodesToRemove, openstackFormatID)
+		klog.V(0).Infof("manager deleting node: %s", nodeRef.Name)
+		nodesToRemove = append(nodesToRemove, nodeRef.SystemUUID)
 	}
 
 	resizeOpts := clusters.ResizeOpts{
@@ -114,6 +231,15 @@ func (mgr *magnumManagerResize) deleteNodes(nodegroup string, nodes []NodeRef, u
 	err := resizeResult.Extract()
 	if err != nil {
 		return fmt.Errorf("could not resize cluster: %v", err)
+	}
+
+	if anyFake {
+		// Sleep to let the deletion status propagate through the heat stacks.
+		// During scale up the CA checks cloudprovider.Nodes() every loop (default every 10 seconds)
+		// and if it checks again and the failed node is still in CREATE_FAILED it will try to delete
+		// it again, which causes a lot of problems.
+		klog.Info("Sleeping to let heat stack changes propagate")
+		time.Sleep(20 * time.Second)
 	}
 
 	return nil
@@ -142,7 +268,35 @@ func (mgr *magnumManagerResize) templateNodeInfo(nodegroup string) (*schedulerno
 	return nil, cloudprovider.ErrNotImplemented
 }
 
-// refresh not implemented
+// refresh has nothing to do for resize manager
 func (mgr *magnumManagerResize) refresh() error {
 	return nil
+}
+
+// getStackName finds the name of a stack matching a given ID.
+func (mgr *magnumManagerResize) getStackName() (string, error) {
+	stack, err := stacks.Find(mgr.heatClient, mgr.stackID).Extract()
+	if err != nil {
+		return "", fmt.Errorf("could not find stack with ID %s: %v", mgr.stackID, err)
+	}
+	klog.V(0).Infof("For stack ID %s, stack name is %s", mgr.stackID, stack.Name)
+	return stack.Name, nil
+}
+
+// getKubeMinionsStack finds the nested kube_minions stack belonging to the main cluster stack,
+// and returns its name and ID.
+func (mgr *magnumManagerResize) getKubeMinionsStack() (name string, ID string, err error) {
+	minionsResource, err := stackresources.Get(mgr.heatClient, mgr.stackName, mgr.stackID, "kube_minions").Extract()
+	if err != nil {
+		return "", "", fmt.Errorf("could not get kube_minions stack resource: %v", err)
+	}
+
+	stack, err := stacks.Find(mgr.heatClient, minionsResource.PhysicalID).Extract()
+	if err != nil {
+		return "", "", fmt.Errorf("could not find stack matching resource ID in heat: %v", err)
+	}
+
+	klog.V(0).Infof("Found nested kube_minions stack: name %s, ID %s", stack.Name, minionsResource.PhysicalID)
+
+	return stack.Name, minionsResource.PhysicalID, nil
 }

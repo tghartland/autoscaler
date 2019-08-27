@@ -19,6 +19,7 @@ package magnum
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
@@ -83,8 +84,11 @@ func (ng *magnumNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 
 	size := *ng.targetSize
 
+	klog.Info("Calling nodegroup DeleteNodes with nodes:")
+
 	var nodeNames []string
 	for _, node := range nodes {
+		klog.Infof("%#v", *node)
 		nodeNames = append(nodeNames, node.Name)
 	}
 	klog.V(1).Infof("Deleting nodes: %v", nodeNames)
@@ -107,8 +111,10 @@ func (ng *magnumNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 		nodeRefs = append(nodeRefs, NodeRef{
 			Name:       node.Name,
 			MachineID:  node.Status.NodeInfo.MachineID,
+			SystemUUID: node.Status.NodeInfo.SystemUUID,
 			ProviderID: node.Spec.ProviderID,
 			IPs:        IPs,
+			IsFake:     isFakeNode(node),
 		})
 	}
 
@@ -118,6 +124,10 @@ func (ng *magnumNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 	}
 
 	*ng.targetSize = size - len(nodes)
+
+	// Sleep for a few seconds to ensure that delete requests are processed in order
+	time.Sleep(5 * time.Second)
+
 	return nil
 }
 
@@ -147,15 +157,11 @@ func (ng *magnumNodeGroup) Debug() string {
 
 // Nodes returns a list of nodes that belong to this node group.
 func (ng *magnumNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
-	nodes, err := ng.magnumManager.getNodes(ng.id)
+	instances, err := ng.magnumManager.getNodes(ng.id)
 	if err != nil {
 		return nil, fmt.Errorf("could not get nodes: %v", err)
 	}
-	/*var instances []cloudprovider.Instance
-	for _, node := range nodes {
-		instances = append(instances, cloudprovider.Instance{Id: node})
-	}*/
-	return nodes, nil
+	return instances, nil
 }
 
 // TemplateNodeInfo returns a node template for this node group.

@@ -17,22 +17,11 @@ limitations under the License.
 package magnum
 
 import (
-	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
-	"net/http"
 
-	"gopkg.in/gcfg.v1"
-	netutil "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud"
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack"
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack/containerinfra/v1/clusters"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
-	"k8s.io/autoscaler/cluster-autoscaler/version"
-	certutil "k8s.io/client-go/util/cert"
-	"k8s.io/klog"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
@@ -48,82 +37,26 @@ type magnumManager interface {
 	refresh() error
 }
 
-// createClusterClient creates the gophercloud service client for communicating with magnum.
-//
-// The cluster object is retrieved once to check that the cluster-name given in the command line
-// options is the UUID of the cluster, and if it was the cluster name then it is replaced with the UUID
-func createClusterClient(configReader io.Reader, opts config.AutoscalingOptions) (*gophercloud.ServiceClient, error) {
-	var cfg Config
-	if configReader != nil {
-		if err := gcfg.ReadInto(&cfg, configReader); err != nil {
-			return nil, fmt.Errorf("couldn't read cloud config: %v", err)
-		}
-	}
-
-	if opts.ClusterName == "" {
-		return nil, errors.New("the cluster-name parameter must be set")
-	}
-
-	authOpts := toAuthOptsExt(cfg)
-
-	provider, err := openstack.NewClient(cfg.Global.AuthURL)
-	if err != nil {
-		return nil, fmt.Errorf("could not create openstack client: %v", err)
-	}
-
-	userAgent := gophercloud.UserAgent{}
-	userAgent.Prepend(fmt.Sprintf("cluster-autoscaler/%s", version.ClusterAutoscalerVersion))
-	userAgent.Prepend(fmt.Sprintf("cluster/%s", opts.ClusterName))
-	provider.UserAgent = userAgent
-
-	klog.V(5).Infof("Using user-agent %q", userAgent.Join())
-
-	if cfg.Global.CAFile != "" {
-		roots, err := certutil.NewPool(cfg.Global.CAFile)
-		if err != nil {
-			return nil, err
-		}
-		config := &tls.Config{}
-		config.RootCAs = roots
-		provider.HTTPClient.Transport = netutil.SetOldTransportDefaults(&http.Transport{TLSClientConfig: config})
-	}
-
-	err = openstack.AuthenticateV3(provider, authOpts, gophercloud.EndpointOpts{})
-	if err != nil {
-		return nil, fmt.Errorf("could not authenticate client: %v", err)
-	}
-
-	clusterClient, err := openstack.NewContainerInfraV1(provider, gophercloud.EndpointOpts{Type: "container-infra", Name: "magnum", Region: cfg.Global.Region})
-	if err != nil {
-		return nil, fmt.Errorf("could not create container-infra client: %v", err)
-	}
-
-	cluster, err := clusters.Get(clusterClient, opts.ClusterName).Extract()
-	if err != nil {
-		return nil, fmt.Errorf("unable to access cluster %q: %v", opts.ClusterName, err)
-	}
-
-	// Prefer to use the cluster UUID if the cluster name was given in the parameters
-	if opts.ClusterName != cluster.UUID {
-		klog.V(2).Infof("Using cluster UUID %q instead of name %q", cluster.UUID, opts.ClusterName)
-		opts.ClusterName = cluster.UUID
-
-		// Need to remake user-agent with UUID instead of name
-		userAgent := gophercloud.UserAgent{}
-		userAgent.Prepend(fmt.Sprintf("cluster-autoscaler/%s", version.ClusterAutoscalerVersion))
-		userAgent.Prepend(fmt.Sprintf("cluster/%s", opts.ClusterName))
-		provider.UserAgent = userAgent
-		klog.V(5).Infof("Using updated user-agent %q", userAgent.Join())
-	}
-
-	return clusterClient, nil
-}
-
 // createMagnumManager creates the correct implementation of magnumManager for the available API version.
 func createMagnumManager(configReader io.Reader, discoverOpts cloudprovider.NodeGroupDiscoveryOptions, opts config.AutoscalingOptions) (magnumManager, error) {
-	clusterClient, err := createClusterClient(configReader, opts)
+	cfg, err := readConfig(configReader)
 	if err != nil {
-		return nil, fmt.Errorf("could not create client: %v", err)
+		return nil, err
+	}
+
+	provider, err := createProviderClient(cfg, opts)
+	if err != nil {
+		return nil, fmt.Errorf("could not create provider client: %v", err)
+	}
+
+	clusterClient, err := createClusterClient(cfg, provider, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkClusterUUID(provider, clusterClient, opts)
+	if err != nil {
+		return nil, fmt.Errorf("could not check cluster UUID: %v", err)
 	}
 
 	apiVersion, err := getAvailableAPIVersion(clusterClient)
@@ -135,7 +68,11 @@ func createMagnumManager(configReader io.Reader, discoverOpts cloudprovider.Node
 
 	switch {
 	case apiVersion.satisfies(microversionResize):
-		return createMagnumManagerResize(clusterClient, opts)
+		heatClient, err := createHeatClient(cfg, provider, opts)
+		if err != nil {
+			return nil, err
+		}
+		return createMagnumManagerResize(clusterClient, heatClient, opts)
 	default:
 		return nil, fmt.Errorf("no magnum manager available for API microversion %q", apiVersion)
 	}

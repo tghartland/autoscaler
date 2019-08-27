@@ -48,14 +48,14 @@ var (
 type magnumCloudProvider struct {
 	magnumManager   magnumManager
 	resourceLimiter *cloudprovider.ResourceLimiter
-	nodeGroups      []magnumNodeGroup
+	nodeGroups      []*magnumNodeGroup
 }
 
 func buildMagnumCloudProvider(magnumManager magnumManager, resourceLimiter *cloudprovider.ResourceLimiter) (cloudprovider.CloudProvider, error) {
 	mcp := &magnumCloudProvider{
 		magnumManager:   magnumManager,
 		resourceLimiter: resourceLimiter,
-		nodeGroups:      []magnumNodeGroup{},
+		nodeGroups:      []*magnumNodeGroup{},
 	}
 	return mcp, nil
 }
@@ -79,13 +79,13 @@ func (mcp *magnumCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
 func (mcp *magnumCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 	groups := make([]cloudprovider.NodeGroup, len(mcp.nodeGroups))
 	for i, group := range mcp.nodeGroups {
-		groups[i] = &group
+		groups[i] = group
 	}
 	return groups
 }
 
 // AddNodeGroup appends a node group to the list of node groups managed by this cloud provider.
-func (mcp *magnumCloudProvider) AddNodeGroup(group magnumNodeGroup) {
+func (mcp *magnumCloudProvider) AddNodeGroup(group *magnumNodeGroup) {
 	mcp.nodeGroups = append(mcp.nodeGroups, group)
 }
 
@@ -97,8 +97,8 @@ func (mcp *magnumCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovide
 	if _, found := node.ObjectMeta.Labels["node-role.kubernetes.io/master"]; found {
 		return nil, nil
 	}
-	klog.Infof("Getting node group for node %s", node.Name)
-	return &(mcp.nodeGroups[0]), nil
+	klog.Infof("Getting node group for node %s (fake=%v)", node.Name, isFakeNode(node))
+	return mcp.nodeGroups[0], nil
 }
 
 // Pricing is not implemented.
@@ -194,7 +194,7 @@ func BuildMagnum(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 			klog.Fatalf("Could not parse node group spec %s: %v", nodegroupSpec, err)
 		}
 
-		ng := magnumNodeGroup{
+		ng := &magnumNodeGroup{
 			magnumManager:      manager,
 			id:                 spec.Name,
 			clusterUpdateMutex: &clusterUpdateLock,
