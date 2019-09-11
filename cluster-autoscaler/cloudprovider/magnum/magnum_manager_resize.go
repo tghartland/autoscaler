@@ -128,6 +128,13 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 		return nil, fmt.Errorf("could not get kube_minions stack from heat: %v", err)
 	}
 
+	clusterStatus, err := mgr.getClusterStatus()
+	if err != nil {
+		return nil, fmt.Errorf("could not get cluster status: %v", err)
+	}
+
+	klog.Infof("Cluster status is %q", clusterStatus)
+
 	// mapping from index to server ID e.g
 	// "0": "4c30961a-6e2f-42be-be01-5270e1546a89"
 	refsMap := make(map[string]string)
@@ -158,6 +165,10 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 			instance.Status.State = cloudprovider.InstanceCreating
 		case "CREATE_FAILED", "UPDATE_FAILED":
 			instance.Status.State = cloudprovider.InstanceCreating
+			if clusterStatus == "UPDATE_IN_PROGRESS" {
+				klog.Infof("Ignoring failed node %s until cluster update complete", minion.Name)
+				break
+			}
 			/*if seenAt, found := mgr.failedNodesDeleted[minion.Name]; found {
 				if time.Since(seenAt) < time.Minute {
 					klog.Infof("Skipping previously deleted node %s, %s", minion.Name, minion.PhysicalID)
@@ -233,7 +244,7 @@ func (mgr *magnumManagerResize) deleteNodes(nodegroup string, nodes []NodeRef, u
 		return fmt.Errorf("could not resize cluster: %v", err)
 	}
 
-	if anyFake {
+	if anyFake && false {
 		// Sleep to let the deletion status propagate through the heat stacks.
 		// During scale up the CA checks cloudprovider.Nodes() every loop (default every 10 seconds)
 		// and if it checks again and the failed node is still in CREATE_FAILED it will try to delete
