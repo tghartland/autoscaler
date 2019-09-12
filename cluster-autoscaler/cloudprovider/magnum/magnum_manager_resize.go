@@ -133,7 +133,22 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 		return nil, fmt.Errorf("could not get cluster status: %v", err)
 	}
 
-	klog.Infof("Cluster status is %q", clusterStatus)
+	isChanging := func(status string) bool {
+		switch status {
+		case "CREATE_COMPLETE", "CREATE_FAILED", "UPDATE_COMPLETE", "UPDATE_FAILED":
+			return false
+		default:
+			return true
+		}
+	}
+
+	clusterChanging := isChanging(clusterStatus) || isChanging(stack.Status)
+
+	for _, minion := range minionResources {
+		clusterChanging = clusterChanging || isChanging(minion.Status)
+	}
+
+	klog.Infof("Cluster status is %q, cluster is changing = %v", clusterStatus, clusterChanging)
 
 	// mapping from index to server ID e.g
 	// "0": "4c30961a-6e2f-42be-be01-5270e1546a89"
@@ -165,8 +180,8 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 			instance.Status.State = cloudprovider.InstanceCreating
 		case "CREATE_FAILED", "UPDATE_FAILED":
 			instance.Status.State = cloudprovider.InstanceCreating
-			if clusterStatus == "UPDATE_IN_PROGRESS" {
-				klog.Infof("Ignoring failed node %s until cluster update complete", minion.Name)
+			if clusterChanging {
+				klog.Infof("Ignoring error of failed node %s until cluster update complete", minion.Name)
 				break
 			}
 			/*if seenAt, found := mgr.failedNodesDeleted[minion.Name]; found {
@@ -206,6 +221,7 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 
 	m, _ := json.MarshalIndent(nodes, "", "\t")
 	klog.Infof("Returning node instances:\n%s", string(m))
+	klog.Infof("Cluster status is %q, cluster is changing = %v", clusterStatus, clusterChanging)
 	return nodes, nil
 }
 
@@ -216,11 +232,11 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 // TODO: The two step process is required until https://storyboard.openstack.org/#!/story/2005052
 // is complete, which will allow resizing with specific nodes to be deleted as a single Magnum operation.
 func (mgr *magnumManagerResize) deleteNodes(nodegroup string, nodes []NodeRef, updatedNodeCount int) error {
-	anyFake := false
+	//anyFake := false
 	var nodesToRemove []string
 	for _, nodeRef := range nodes {
 		if nodeRef.IsFake {
-			anyFake = true
+			//anyFake = true
 			klog.Infof("Deleting fake node %s", nodeRef.Name)
 			nodesToRemove = append(nodesToRemove, nodeRef.Name)
 			mgr.failedNodesDeleted[nodeRef.Name] = time.Now()
@@ -244,14 +260,14 @@ func (mgr *magnumManagerResize) deleteNodes(nodegroup string, nodes []NodeRef, u
 		return fmt.Errorf("could not resize cluster: %v", err)
 	}
 
-	if anyFake && false {
+	/*if anyFake && false {
 		// Sleep to let the deletion status propagate through the heat stacks.
 		// During scale up the CA checks cloudprovider.Nodes() every loop (default every 10 seconds)
 		// and if it checks again and the failed node is still in CREATE_FAILED it will try to delete
 		// it again, which causes a lot of problems.
 		klog.Info("Sleeping to let heat stack changes propagate")
 		time.Sleep(20 * time.Second)
-	}
+	}*/
 
 	return nil
 }
