@@ -43,8 +43,6 @@ type magnumManagerResize struct {
 
 	kubeMinionsStackName string
 	kubeMinionsStackID   string
-
-	failedNodesDeleted map[string]time.Time
 }
 
 // createMagnumManagerResize creates an instance of magnumManagerResize.
@@ -54,8 +52,6 @@ func createMagnumManagerResize(clusterClient, heatClient *gophercloud.ServiceCli
 		heatClient:    heatClient,
 		clusterName:   opts.ClusterName,
 	}
-
-	manager.failedNodesDeleted = make(map[string]time.Time)
 
 	cluster, err := clusters.Get(manager.clusterClient, manager.clusterName).Extract()
 	if err != nil {
@@ -102,15 +98,21 @@ func (mgr *magnumManagerResize) updateNodeCount(nodegroup string, nodes int) err
 	return nil
 }
 
-// getNodes should return ProviderIDs for all nodes in the node group,
+// getNodes returns ProviderIDs for all nodes in the node group,
 // used to find any nodes which are unregistered in kubernetes.
-// This can not be done with heat currently but a change has been merged upstream
-// that will allow this.
+//
+// Nodes which are in CREATE_IN_PROGRESS state are also returned,
+// so that the autoscaler is aware of them. Nodes which fail to be
+// created are returned as failed instances *after* the cluster resize
+// has finished, so that the autoscaler will not try to delete them
+// while the cluster is still scaling up.
+//
+// The statuses of the cluster, heat stack, and minion stacks are all
+// checked to be sure that the cluster has finished resizing, since a
+// failed resize will immediately put the cluster into the UPDATE_FAILED
+// state even though some nodes may still be creating. In particular
+// this is the case for scale ups which exceed the project quota.
 func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Instance, error) {
-	// TODO: get node ProviderIDs by getting nova instance IDs from heat
-	// Waiting for https://review.openstack.org/#/c/639053/ to be able to get
-	// nova instance IDs from the kube_minions stack resource.
-	// This works fine being empty for now anyway.
 	var nodes []cloudprovider.Instance
 
 	minionResourcesPages, err := stackresources.List(mgr.heatClient, mgr.kubeMinionsStackName, mgr.kubeMinionsStackID, nil).AllPages()
@@ -133,24 +135,15 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 		return nil, fmt.Errorf("could not get cluster status: %v", err)
 	}
 
-	isChanging := func(status string) bool {
-		switch status {
-		case "CREATE_COMPLETE", "CREATE_FAILED", "UPDATE_COMPLETE", "UPDATE_FAILED":
-			return false
-		default:
-			return true
-		}
-	}
-
-	clusterChanging := isChanging(clusterStatus) || isChanging(stack.Status)
-
+	// Check if the cluster is in an "in progress" status
+	clusterChanging := statusIsChanging(clusterStatus) || statusIsChanging(stack.Status)
 	for _, minion := range minionResources {
-		clusterChanging = clusterChanging || isChanging(minion.Status)
+		clusterChanging = clusterChanging || statusIsChanging(minion.Status)
 	}
 
 	klog.Infof("Cluster status is %q, cluster is changing = %v", clusterStatus, clusterChanging)
 
-	// mapping from index to server ID e.g
+	// mapping from minion index to server ID e.g
 	// "0": "4c30961a-6e2f-42be-be01-5270e1546a89"
 	refsMap := make(map[string]string)
 	for _, output := range stack.Outputs {
@@ -163,11 +156,10 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 	}
 
 	klog.Infof("refsMap: %#v", refsMap)
-	klog.Infof("failedDeleted: %#v", mgr.failedNodesDeleted)
 
 	for _, minion := range minionResources {
-		minion.Links = nil
-		klog.Infof("Minion resource: %#v", minion)
+		minion.Links = nil //debug
+		//klog.Infof("Minion resource: %#v", minion)
 		instance := cloudprovider.Instance{Id: minion.Name, Status: &cloudprovider.InstanceStatus{}}
 
 		switch minion.Status {
@@ -176,34 +168,43 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 			continue
 		case "DELETE_IN_PROGRESS":
 			instance.Status.State = cloudprovider.InstanceDeleting
+
+			errorClass := cloudprovider.OtherErrorClass
+
+			// check if the error message is for exceeding the project quota
+			if strings.Contains(strings.ToLower(minion.StatusReason), "quota") {
+				errorClass = cloudprovider.OutOfResourcesErrorClass
+			}
+			instance.Status.ErrorInfo = &cloudprovider.InstanceErrorInfo{
+				ErrorMessage: minion.StatusReason,
+				ErrorClass:   errorClass,
+			}
 		case "INIT_COMPLETE", "CREATE_IN_PROGRESS", "UPDATE_IN_PROGRESS":
 			instance.Status.State = cloudprovider.InstanceCreating
 		case "CREATE_FAILED", "UPDATE_FAILED":
 			instance.Status.State = cloudprovider.InstanceCreating
 			if clusterChanging {
+				// Don't report that this instance has failed until the cluster has finished updating
 				klog.Infof("Ignoring error of failed node %s until cluster update complete", minion.Name)
 				break
 			}
-			/*if seenAt, found := mgr.failedNodesDeleted[minion.Name]; found {
-				if time.Since(seenAt) < time.Minute {
-					klog.Infof("Skipping previously deleted node %s, %s", minion.Name, minion.PhysicalID)
-					instance.Status.State = cloudprovider.InstanceDeleting
-					break
-				}
-			}*/
-			detail, err := stackresources.Get(mgr.heatClient, mgr.kubeMinionsStackName, mgr.kubeMinionsStackID, minion.Name).Extract()
+
+			/*detail, err := stackresources.Get(mgr.heatClient, mgr.kubeMinionsStackName, mgr.kubeMinionsStackID, minion.Name).Extract()
 			if err != nil {
-				klog.Warningf("Failed to get detail for minion %s in CREATE_FAILED: %v", minion.Name, err)
+				klog.Warningf("Failed to get detail for minion %s in state %s: %v", minion.Name, minion.Status, err)
 				continue
-			}
-			detail.Links = nil
-			klog.Infof("Detail for minion %s in CREATE_FAILED: %#v", minion.Name, detail)
+			}*/
+			//detail.Links = nil //debug
+			//klog.Infof("Detail for minion %s in CREATE_FAILED: %#v", minion.Name, detail)
+
 			errorClass := cloudprovider.OtherErrorClass
-			if strings.Contains(strings.ToLower(detail.StatusReason), "quota") {
+
+			// check if the error message is for exceeding the project quota
+			if strings.Contains(strings.ToLower(minion.StatusReason), "quota") {
 				errorClass = cloudprovider.OutOfResourcesErrorClass
 			}
 			instance.Status.ErrorInfo = &cloudprovider.InstanceErrorInfo{
-				ErrorMessage: detail.StatusReason,
+				ErrorMessage: minion.StatusReason,
 				ErrorClass:   errorClass,
 			}
 		case "CREATE_COMPLETE", "UPDATE_COMPLETE":
@@ -232,14 +233,13 @@ func (mgr *magnumManagerResize) getNodes(nodegroup string) ([]cloudprovider.Inst
 // TODO: The two step process is required until https://storyboard.openstack.org/#!/story/2005052
 // is complete, which will allow resizing with specific nodes to be deleted as a single Magnum operation.
 func (mgr *magnumManagerResize) deleteNodes(nodegroup string, nodes []NodeRef, updatedNodeCount int) error {
-	//anyFake := false
+	anyFake := false
 	var nodesToRemove []string
 	for _, nodeRef := range nodes {
 		if nodeRef.IsFake {
-			//anyFake = true
+			anyFake = true
 			klog.Infof("Deleting fake node %s", nodeRef.Name)
 			nodesToRemove = append(nodesToRemove, nodeRef.Name)
-			mgr.failedNodesDeleted[nodeRef.Name] = time.Now()
 			continue
 		}
 		klog.V(0).Infof("manager deleting node: %s", nodeRef.Name)
@@ -260,14 +260,14 @@ func (mgr *magnumManagerResize) deleteNodes(nodegroup string, nodes []NodeRef, u
 		return fmt.Errorf("could not resize cluster: %v", err)
 	}
 
-	/*if anyFake && false {
+	if anyFake && false {
 		// Sleep to let the deletion status propagate through the heat stacks.
 		// During scale up the CA checks cloudprovider.Nodes() every loop (default every 10 seconds)
 		// and if it checks again and the failed node is still in CREATE_FAILED it will try to delete
 		// it again, which causes a lot of problems.
 		klog.Info("Sleeping to let heat stack changes propagate")
-		time.Sleep(20 * time.Second)
-	}*/
+		time.Sleep(5 * time.Second)
+	}
 
 	return nil
 }

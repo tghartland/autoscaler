@@ -153,3 +153,12 @@ type NodeRef struct {
 func isFakeNode(node *v1.Node) bool {
 	return len(node.ObjectMeta.UID) == 0
 }
+
+func statusIsChanging(status string) bool {
+	switch status {
+	case "CREATE_COMPLETE", "CREATE_FAILED", "UPDATE_COMPLETE", "UPDATE_FAILED":
+		return false
+	default:
+		return true
+	}
+}
