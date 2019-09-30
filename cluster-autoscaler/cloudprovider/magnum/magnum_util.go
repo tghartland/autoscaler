@@ -150,13 +150,17 @@ type NodeRef struct {
 	IsFake     bool
 }
 
+// isFakeNode returns true if a node object was created from a CA cloudprovider.Instance,
+// or false if it is from an actual node in the cluster.
 func isFakeNode(node *v1.Node) bool {
 	return len(node.ObjectMeta.UID) == 0
 }
 
+// statusIsChanging differentiates between cluster/stack statuses which are "in progress"
+// and those which are "complete" (operation completed or failed).
 func statusIsChanging(status string) bool {
 	switch status {
-	case "CREATE_COMPLETE", "CREATE_FAILED", "UPDATE_COMPLETE", "UPDATE_FAILED":
+	case "CREATE_COMPLETE", "CREATE_FAILED", "UPDATE_COMPLETE", "UPDATE_FAILED", "DELETE_FAILED":
 		return false
 	default:
 		return true
