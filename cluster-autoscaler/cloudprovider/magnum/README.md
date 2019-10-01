@@ -6,10 +6,16 @@ the cluster autoscaler up and running.
 
 ## Compatibility
 
-(TODO)
-* magnum rocky or earlier: cluster autoscaler v1.15
-* magnum stein: cluster autoscaler v1.xx or higher
-* magnum train or later: cluster autoscaler v1.xy or higher
+* For Magnum *Rocky* or earlier: cluster autoscaler v1.15 or v1.16
+* For Magnum *Train* or later: cluster autoscaler v1.17 or higher
+
+## Updates
+
+* CA 1.17
+  * Update to support Magnum node groups (introduced in Magnum *Train*)
+  * Report upcoming/failed nodes so that CA can back off if the OpenStack project quota is being exceeded
+* CA 1.15
+  * Initial release
 
 ## Permissions and credentials
 
@@ -36,11 +42,6 @@ to match your cluster.
 | --nodes          | Of the form `min:max:NodeGroupName`. Node groups are not yet implemented in Magnum so only a single node group is currently supported.     |
 
 ## Notes
-
-Magnum does not yet support multiple node groups within a single cluster, but this
-is currently in development. Once node groups are available for Magnum, support
-for autoscaling clusters using nodegroups will be made available by adding another
-implementation of the [Magnum manager interface](./magnum_manager.go). 
 
 The autoscaler will not remove nodes which have non-default kube-system pods.
 This prevents the node that the autoscaler is running on from being scaled down.
