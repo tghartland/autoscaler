@@ -28,9 +28,9 @@ const (
 	clusterStatusUpdateComplete   = "UPDATE_COMPLETE"
 	clusterStatusUpdateFailed     = "UPDATE_FAILED"
 
-	waitForStatusTimeStep       = 30 * time.Second
-	waitForUpdateStatusTimeout  = 2 * time.Minute
-	waitForCompleteStatusTimout = 10 * time.Minute
+	waitForStatusTimeStep       = 15 * time.Second
+	waitForUpdateStatusTimeout  = 3 * time.Minute
+	waitForCompleteStatusTimout = 15 * time.Minute
 
 	// Could move to property of magnumManager implementations if needed
 	scaleToZeroSupported = false

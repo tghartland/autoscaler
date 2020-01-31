@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/satori/go.uuid"
@@ -125,6 +124,8 @@ func createMagnumManagerHeat(configReader io.Reader, discoverOpts cloudprovider.
 		return nil, fmt.Errorf("could not create container-infra client: %v", err)
 	}
 
+	clusterClient.Microversion = "latest"
+
 	heatClient, err := openstack.NewOrchestrationV1(provider, gophercloud.EndpointOpts{Type: "orchestration", Name: "heat", Region: cfg.Global.Region})
 	if err != nil {
 		return nil, fmt.Errorf("could not create orchestration client: %v", err)
@@ -186,12 +187,15 @@ func (mgr *magnumManagerHeat) nodeGroupSize(nodegroup string) (int, error) {
 
 // updateNodeCount replaces the cluster node_count in magnum.
 func (mgr *magnumManagerHeat) updateNodeCount(nodegroup string, nodes int) error {
-	updateOpts := []clusters.UpdateOptsBuilder{
-		UpdateOptsInt{Op: clusters.ReplaceOp, Path: "/node_count", Value: nodes},
+	resizeOpts := clusters.ResizeOpts{
+		NodeCount: &nodes,
+		NodeGroup: nodegroup,
 	}
-	_, err := clusters.Update(mgr.clusterClient, mgr.clusterName, updateOpts).Extract()
+
+	_, err := clusters.Resize(mgr.clusterClient, mgr.clusterName, resizeOpts).Extract()
 	if err != nil {
-		return fmt.Errorf("could not update cluster: %v", err)
+		klog.Errorf("Could not resize cluster with options nodegroup=%s, node_count=%d", nodegroup, nodes)
+		return fmt.Errorf("could not resize cluster: %v", err)
 	}
 	return nil
 }
@@ -219,35 +223,19 @@ func (mgr *magnumManagerHeat) deleteNodes(nodegroup string, nodes []NodeRef, upd
 	if err != nil {
 		return fmt.Errorf("could not find stack indices for nodes to be deleted: %v", err)
 	}
-	minionsToRemove := strings.Join(stackIndices, ",")
 
-	updateOpts := stacks.UpdateOpts{
-		Parameters: map[string]interface{}{
-			"minions_to_remove": minionsToRemove,
-			"number_of_minions": updatedNodeCount,
-		},
+	resizeOpts := clusters.ResizeOpts{
+		NodeCount:     &updatedNodeCount,
+		NodesToRemove: stackIndices,
+		NodeGroup:     nodegroup,
 	}
 
-	updateResult := stacks.UpdatePatch(mgr.heatClient, mgr.stackName, mgr.stackID, updateOpts)
-	err = updateResult.ExtractErr()
+	_, err = clusters.Resize(mgr.clusterClient, mgr.clusterName, resizeOpts).Extract()
 	if err != nil {
-		return fmt.Errorf("stack patch failed: %v", err)
+		klog.Errorf("Could not resize cluster with options nodegroup=%s, node_count=%d, nodes_to_remove=%v", nodegroup, updatedNodeCount, stackIndices)
+		return fmt.Errorf("could not resize cluster: %v", err)
 	}
 
-	// Wait for the stack to do its thing before updating the cluster node_count
-	err = mgr.waitForStackStatus(stackStatusUpdateInProgress, waitForUpdateStatusTimeout)
-	if err != nil {
-		return fmt.Errorf("error waiting for stack %s status: %v", stackStatusUpdateInProgress, err)
-	}
-	err = mgr.waitForStackStatus(stackStatusUpdateComplete, waitForCompleteStatusTimout)
-	if err != nil {
-		return fmt.Errorf("error waiting for stack %s status: %v", stackStatusUpdateComplete, err)
-	}
-
-	err = mgr.updateNodeCount(nodegroup, updatedNodeCount)
-	if err != nil {
-		return fmt.Errorf("could not set new cluster size: %v", err)
-	}
 	return nil
 }
 
